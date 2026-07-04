@@ -11,7 +11,15 @@ from networksecurity.constants.training_pipeline import FEATURE_COLUMNS
 
 load_dotenv()
 
-API_URL = os.getenv("API_URL", "http://localhost:8000").rstrip("/")
+def config_value(name, default=""):
+    try:
+        return str(st.secrets.get(name, "") or os.getenv(name, default)).strip()
+    except Exception:
+        return str(os.getenv(name, default)).strip()
+
+
+API_URL = config_value("API_URL").rstrip("/")
+SHOW_API_URL_INPUT = config_value("SHOW_API_URL_INPUT", "false").lower() == "true"
 
 FEATURE_HELP = {
     "having_IP_Address": ("IP address in URL", "Checks whether the URL uses a raw IP instead of a domain."),
@@ -536,6 +544,8 @@ def inject_styles():
 
 @st.cache_data(ttl=10, show_spinner=False)
 def api_is_live(api_url):
+    if not api_url:
+        return False
     try:
         return requests.get(f"{api_url}/health", timeout=2).ok
     except requests.RequestException:
@@ -545,7 +555,7 @@ def api_is_live(api_url):
 def render_hero(api_url):
     live = api_is_live(api_url)
     status_class = "status-ok" if live else "status-bad"
-    status_text = "API online" if live else "API offline"
+    status_text = "API online" if live else "API not configured" if not api_url else "API offline"
     st.markdown(
         f"""
         <div class="hero-shell">
@@ -703,8 +713,10 @@ def result_card(result):
 st.set_page_config(page_title="Phisherman", layout="wide")
 inject_styles()
 
-api_url = st.sidebar.text_input("FastAPI URL", API_URL).rstrip("/")
-st.sidebar.caption("Use `.venv/bin/uvicorn app:app --reload` for local runs.")
+api_url = API_URL
+if SHOW_API_URL_INPUT:
+    api_url = st.sidebar.text_input("FastAPI URL", API_URL or "http://localhost:8000").rstrip("/")
+    st.sidebar.caption("Local dev only. Hide this in production with `SHOW_API_URL_INPUT=false`.")
 
 render_hero(api_url)
 
@@ -742,6 +754,8 @@ with manual_tab:
 if url_clicked:
     if not url.strip():
         st.error("Enter a URL first.")
+    elif not api_url:
+        st.error("Backend API is not configured. Set `API_URL` in Streamlit secrets.")
     else:
         try:
             response = requests.post(f"{api_url}/predict/url", json={"url": url}, timeout=30)
@@ -753,11 +767,14 @@ if url_clicked:
             result_card(result)
 
 if manual_clicked:
-    try:
-        response = requests.post(f"{api_url}/predict", json=payload, timeout=30)
-        response.raise_for_status()
-        result = response.json()
-    except requests.RequestException as exc:
-        st.error(f"Prediction request failed: {exc}")
+    if not api_url:
+        st.error("Backend API is not configured. Set `API_URL` in Streamlit secrets.")
     else:
-        result_card(result)
+        try:
+            response = requests.post(f"{api_url}/predict", json=payload, timeout=30)
+            response.raise_for_status()
+            result = response.json()
+        except requests.RequestException as exc:
+            st.error(f"Prediction request failed: {exc}")
+        else:
+            result_card(result)

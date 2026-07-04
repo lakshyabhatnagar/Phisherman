@@ -79,6 +79,8 @@ Start Streamlit after the API is running:
 
 The UI asks for a small set of high-signal fields first. Advanced users can override every model feature for more accurate prediction.
 
+For Streamlit Cloud, set `API_URL` in app secrets to the deployed FastAPI backend URL. Do not use `localhost` in production. The sidebar API override is hidden unless `SHOW_API_URL_INPUT=true`.
+
 ## Environment Variables
 
 Copy `.env.example` to `.env` for local development. Never commit `.env`, Google service account JSON files, or trained `.pkl` artifacts.
@@ -94,6 +96,8 @@ Copy `.env.example` to `.env` for local development. Never commit `.env`, Google
 - `AUTO_RETRAIN_ON_DRIFT`: defaults to `true`.
 - `AUTO_RETRAIN_COOLDOWN_SECONDS`: defaults to `3600`.
 - `ENABLE_MLFLOW`: optional, defaults to `false`.
+- `API_URL`: FastAPI backend URL used by Streamlit.
+- `SHOW_API_URL_INPUT`: optional local-dev toggle for showing the API URL sidebar input.
 
 ## Production
 

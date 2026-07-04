@@ -18,6 +18,7 @@ htmlcov/
 venv/
 .venv/
 env/
+.venv
 
 # Generated runtime output
 logs/

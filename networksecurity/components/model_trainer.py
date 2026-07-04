@@ -1,4 +1,5 @@
 import os,sys
+import shutil
 from networksecurity.exception.exception import NetworkSecurityException
 from networksecurity.logging.logger import logging
 from networksecurity.entity.config_entity import ModelTrainerConfig
@@ -6,17 +7,12 @@ from networksecurity.entity.artifact_entity import DataTransformationArtifact, M
 from networksecurity.utils.main_utils.utils import evaluate_model
 
 from networksecurity.utils.ml_utils.model.estimator import NetworkModel
-from networksecurity.utils.main_utils.utils import save_object, load_object, save_numpy_array_data, load_numpy_array_data
+from networksecurity.utils.main_utils.utils import save_object, load_object, load_numpy_array_data
 from networksecurity.utils.ml_utils.metric.classification_metric import get_classification_score
+from networksecurity.constants.training_pipeline import FINAL_FEATURE_DEFAULTS_PATH, FINAL_MODEL_PATH, FINAL_PREPROCESSOR_PATH
 from sklearn.ensemble import AdaBoostClassifier, GradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import r2_score
-from sklearn.neighbors import KNeighborsClassifier
 from sklearn.tree import DecisionTreeClassifier
-import mlflow
-
-import dagshub
-dagshub.init(repo_owner='lakshyabhatnagar', repo_name='NetworkSecurity', mlflow=True)
 
 class ModelTrainer:
     def __init__(self, model_trainer_config: ModelTrainerConfig, data_transformation_artifact: DataTransformationArtifact):
@@ -28,48 +24,45 @@ class ModelTrainer:
             raise NetworkSecurityException(e, sys) from e
         
     def track_mlflow(self, best_model, classification_metric):
-        with mlflow.start_run():
-            f1_score = classification_metric.f1_score
-            precision_score = classification_metric.precision_score
-            recall_score = classification_metric.recall_score
+        if os.getenv("ENABLE_MLFLOW", "false").lower() != "true":
+            return
+        import mlflow
 
-            mlflow.log_metric("f1_score", f1_score)
-            mlflow.log_metric("precision", precision_score)
-            mlflow.log_metric("recall", recall_score)
+        with mlflow.start_run():
+            mlflow.log_metric("f1_score", classification_metric.f1_score)
+            mlflow.log_metric("precision", classification_metric.precision_score)
+            mlflow.log_metric("recall", classification_metric.recall_score)
             mlflow.sklearn.log_model(best_model, "model")
         
     def train_model(self,x_train,y_train,x_test,y_test):
         models={
-            'Logistic Regression': LogisticRegression(verbose=1),
+            'Logistic Regression': LogisticRegression(max_iter=500),
             'Decision Tree': DecisionTreeClassifier(),
-            'Random Forest': RandomForestClassifier(verbose=1),
-            'Gradient Boosting': GradientBoostingClassifier(verbose=1),
+            'Random Forest': RandomForestClassifier(),
+            'Gradient Boosting': GradientBoostingClassifier(),
             'AdaBoost': AdaBoostClassifier()   
         }
         params={
             "Decision Tree": {
-                'criterion': ['gini', 'entropy', 'log_loss'],
-                'splitter': ['best', 'random'],
-                'max_features': ['auto', 'sqrt', 'log2']
+                'criterion': ['gini', 'entropy'],
+                'max_depth': [None, 10, 20],
             },
             "Random Forest": {
-                'n_estimators': [8,16,32,64,128,256],
-                'criterion': ['gini', 'entropy', 'log_loss'],
-                'max_features': ['auto','sqrt', 'log2', 'None'],
+                'n_estimators': [100, 200],
+                'criterion': ['gini', 'entropy'],
+                'max_features': ['sqrt', 'log2'],
             },
             "Gradient Boosting": {
-                'n_estimators': [8,16,32,64,128,256],
-                'learning_rate': [0.01, 0.1, 0.2],
-                'max_features': ['sqrt', 'log2'],
-                'subsample': [0.6,0.7,0.8, 0.9, 1.0],
-                'criterion': ['friedman_mse', 'squared_error'],
-                'loss': ['log_loss', 'exponential'],
+                'n_estimators': [100, 200],
+                'learning_rate': [0.05, 0.1],
             },
             "AdaBoost": {
-                'n_estimators': [8,16,32,64,128,256],
-                'learning_rate': [0.01, 0.1, 0.5,0.002],
+                'n_estimators': [50, 100],
+                'learning_rate': [0.1, 1.0],
             },
-            "Logistic Regression": {}
+            "Logistic Regression": {
+                "C": [0.5, 1.0, 2.0],
+            }
         }
         model_report: dict=evaluate_model(
             x_train=x_train,
@@ -94,6 +87,13 @@ class ModelTrainer:
         classification_test_metric=get_classification_score(y_true=y_test, y_pred=y_test_pred)
         self.track_mlflow(best_model,classification_test_metric)
 
+        if classification_test_metric.f1_score < self.model_trainer_config.expected_accuracy:
+            raise Exception(f"Best model f1_score {classification_test_metric.f1_score} is below expected score {self.model_trainer_config.expected_accuracy}")
+
+        overfit_gap = abs(classification_train_metric.f1_score - classification_test_metric.f1_score)
+        if overfit_gap > self.model_trainer_config.overfitting_underfitting_threshold:
+            logging.warning(f"Train/test f1 gap is {overfit_gap}")
+
         preprocessor=load_object(file_path=self.data_transformation_artifact.transformed_object_file_path)
         model_dir_path=os.path.dirname(self.model_trainer_config.trained_model_file_path)
         os.makedirs(model_dir_path,exist_ok=True)
@@ -101,8 +101,11 @@ class ModelTrainer:
         Network_model=NetworkModel(preprocessor=preprocessor, model=best_model)
         save_object(file_path=self.model_trainer_config.trained_model_file_path, obj=Network_model)
 
-        #Model Pusher
-        save_object("final_model/model.pkl", best_model)
+        # Publish final inference artifacts only after the candidate model passes checks.
+        save_object(FINAL_MODEL_PATH, best_model)
+        save_object(FINAL_PREPROCESSOR_PATH, preprocessor)
+        os.makedirs(os.path.dirname(FINAL_FEATURE_DEFAULTS_PATH), exist_ok=True)
+        shutil.copyfile(self.data_transformation_artifact.feature_defaults_file_path, FINAL_FEATURE_DEFAULTS_PATH)
 
         #Model trainer artifact
         model_trainer_artifact=ModelTrainerArtifact(trained_model_file_path=self.model_trainer_config.trained_model_file_path,

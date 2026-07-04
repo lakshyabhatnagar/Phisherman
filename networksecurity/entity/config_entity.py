@@ -2,9 +2,6 @@ from datetime import datetime
 import os
 from networksecurity.constants import training_pipeline
 
-print(training_pipeline.PIPELINE_NAME)
-print(training_pipeline.ARTIFACT_DIR)
-
 class TrainingPipelineConfig:
     def __init__(self, timestamp=datetime.now()):
       timestamp=timestamp.strftime("%m_%d_%Y_%H_%M_%S")
@@ -98,6 +95,11 @@ class DataTransformationConfig:
                     self.data_transformation_dir,
                     training_pipeline.DATA_TRANSFORMATION_TRANSFORMED_OBJECT_DIR,
                     training_pipeline.PREPROCESSING_OBJECT_FILE_NAME
+            )
+            self.feature_defaults_file_path: str= os.path.join(
+                    self.data_transformation_dir,
+                    training_pipeline.DATA_TRANSFORMATION_TRANSFORMED_OBJECT_DIR,
+                    training_pipeline.FEATURE_DEFAULTS_FILE_NAME
             )
 
 class ModelTrainerConfig:

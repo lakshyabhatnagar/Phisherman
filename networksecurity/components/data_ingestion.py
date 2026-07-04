@@ -8,6 +8,7 @@ import pymongo
 from sklearn.model_selection import train_test_split
 from networksecurity.entity.config_entity import DataIngestionConfig
 from networksecurity.entity.artifact_entity import DataIngestionArtifact
+from networksecurity.constants.training_pipeline import FEATURE_COLUMNS, RAW_DATA_FILE_PATH, TARGET_COLUMN
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -23,15 +24,30 @@ class DataIngestion:
 
     def export_collection_as_dataframe(self):
         try:
+            if not MONGO_DB_URL:
+                logging.info("MONGO_DB_URL is not configured. Using local training CSV.")
+                return self._read_local_data()
             database_name = self.data_ingestion_config.database_name
             collection_name = self.data_ingestion_config.collection_name
-            self.mongo_client = pymongo.MongoClient(MONGO_DB_URL)
+            self.mongo_client = pymongo.MongoClient(MONGO_DB_URL, serverSelectionTimeoutMS=5000)
             collection= self.mongo_client[database_name][collection_name]
             df=pd.DataFrame(list(collection.find()))
+            if df.empty:
+                logging.info("Mongo collection is empty. Using local training CSV.")
+                return self._read_local_data()
             if '_id' in df.columns.to_list():
-                df.drop(columns=['_id'], axis=1)
+                df.drop(columns=['_id'], axis=1, inplace=True)
             df.replace({"na": np.nan}, inplace=True)
-            return df
+            return df[FEATURE_COLUMNS + [TARGET_COLUMN]]
+        except Exception as e:
+            logging.warning(f"Mongo ingestion failed; using local CSV. Error: {e}")
+            return self._read_local_data()
+
+    def _read_local_data(self):
+        try:
+            df = pd.read_csv(RAW_DATA_FILE_PATH)
+            df.replace({"na": np.nan}, inplace=True)
+            return df[FEATURE_COLUMNS + [TARGET_COLUMN]]
         except Exception as e:
             raise NetworkSecurityException(e, sys) from e
 

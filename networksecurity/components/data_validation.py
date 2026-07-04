@@ -2,8 +2,7 @@ from networksecurity.entity.artifact_entity import DataIngestionArtifact, DataVa
 from networksecurity.entity.config_entity import DataValidationConfig
 from networksecurity.exception.exception import NetworkSecurityException
 from networksecurity.logging.logger import logging
-from scipy.stats import ks_2samp
-from networksecurity.constants.training_pipeline import SCHEMA_FILE_PATH
+from networksecurity.constants.training_pipeline import DRIFT_THRESHOLD, FEATURE_COLUMNS, SCHEMA_FILE_PATH
 from networksecurity.utils.main_utils.utils import read_yaml_file, write_yaml_file
 import pandas as pd
 import os, sys
@@ -27,34 +26,51 @@ class DataValidation:
         
     def Validate_number_of_columns(self, df: pd.DataFrame) -> bool:
         try:
-            number_of_columns=len(self.schema_config)
+            number_of_columns=len(self.schema_config["columns"])
             logging.info(f"Required Number of columns in the DataFrame: {number_of_columns}")
             logging.info(f"Number of columns in the Dataframe: {len(df.columns)}")
             if len(df.columns) == number_of_columns: return True
             return False
         except Exception as e:
             raise NetworkSecurityException(e, sys)
+
+    def validate_column_names(self, df: pd.DataFrame) -> bool:
+        try:
+            expected_columns = [list(column.keys())[0] for column in self.schema_config["columns"]]
+            return list(df.columns) == expected_columns
+        except Exception as e:
+            raise NetworkSecurityException(e, sys)
         
-    def detect_dataset_drift(self,base_df,current_df,threshold=0.05)->bool:
+    @staticmethod
+    def _distribution(series: pd.Series) -> dict[int, float]:
+        return {int(key): float(value) for key, value in series.value_counts(normalize=True).to_dict().items()}
+
+    def detect_dataset_drift(self,base_df,current_df,threshold=DRIFT_THRESHOLD)->bool:
         try:
             status=True
             report={}
-            for column in base_df.columns:
-                d1=base_df[column]
-                d2=current_df[column]
-                is_samp=ks_2samp(d1,d2)
-                if threshold<=is_samp.pvalue: is_found=False
-                else:
-                    is_found=True
+            for column in FEATURE_COLUMNS:
+                base_distribution = self._distribution(base_df[column])
+                current_distribution = self._distribution(current_df[column])
+                values = set(base_distribution) | set(current_distribution)
+                score = max(
+                    abs(current_distribution.get(value, 0.0) - base_distribution.get(value, 0.0))
+                    for value in values
+                )
+                is_found = score >= threshold
+                if is_found:
                     status=False
                 report.update({column: {
-                    "p_value":float(is_samp.pvalue),
-                    "drift_status": is_found
+                    "score": float(score),
+                    "drift_status": is_found,
+                    "base_distribution": base_distribution,
+                    "current_distribution": current_distribution,
                 }})
             drift_report_dir=self.data_validation_config.drift_report_file_path
             dir_path=os.path.dirname(drift_report_dir)
             os.makedirs(dir_path, exist_ok=True)
             write_yaml_file(drift_report_dir,report)
+            return status
         except Exception as e:
             raise NetworkSecurityException(e,sys)
     
@@ -74,13 +90,18 @@ class DataValidation:
             # Validate the number of columns
             status = self.Validate_number_of_columns(train_df)
             if not status:
-                error_message = f"Number of columns in the training data is not as per the schema. Expected: {len(self.schema_config)}, Found: {len(train_df.columns)}"
+                raise Exception(f"Number of columns in the training data is not as per the schema. Expected: {len(self.schema_config['columns'])}, Found: {len(train_df.columns)}")
+            if not self.validate_column_names(train_df):
+                raise Exception("Training data columns are not in the schema order")
+
             status = self.Validate_number_of_columns(test_df)
             if not status:
-                error_message = f"Number of columns in the testing data is not as per the schema. Expected: {len(self.schema_config)}, Found: {len(test_df.columns)}"
+                raise Exception(f"Number of columns in the testing data is not as per the schema. Expected: {len(self.schema_config['columns'])}, Found: {len(test_df.columns)}")
+            if not self.validate_column_names(test_df):
+                raise Exception("Testing data columns are not in the schema order")
             
             # Check the data drift
-            status=self.detect_dataset_drift(train_df,test_df)
+            status=self.detect_dataset_drift(train_df[FEATURE_COLUMNS],test_df[FEATURE_COLUMNS])
             dir_path=os.path.dirname(self.data_validation_config.valid_train_file_path)
             os.makedirs(dir_path,exist_ok=True)
 
@@ -89,8 +110,8 @@ class DataValidation:
         
             data_validation_artifact=DataValidationArtifact(
                 validation_status=status,
-                valid_train_file_path=self.data_ingestion_artifact.train_file_path,
-                valid_test_file_path=self.data_ingestion_artifact.test_file_path,
+                valid_train_file_path=self.data_validation_config.valid_train_file_path,
+                valid_test_file_path=self.data_validation_config.valid_test_file_path,
                 invalid_test_file_path=None,
                 invalid_train_file_path=None,
                 drift_report_file_path=self.data_validation_config.drift_report_file_path

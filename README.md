@@ -1,109 +1,114 @@
-# Network Security Project for Phishing Data
+# Phisherman
 
-## Overview
+An end-to-end phishing risk prediction project built around a FastAPI inference API, a Streamlit demo UI, a retrainable scikit-learn pipeline, MongoDB-backed training data, drift reports, and Google Cloud Storage model artifacts.
 
-This project delivers an end-to-end machine learning pipeline for detecting phishing websites using URL-based features. It automates the workflow from data ingestion to model deployment, ensuring robust, scalable, and production-ready network security. The system leverages advanced ML techniques, data validation, experiment tracking, and a FastAPI interface for real-time inference.
+This project predicts from extracted URL/security features and can also derive the public URL-shape signals from a submitted link.
 
----
+## What It Does
 
-## Table of Contents
+- Accepts partial feature input through `POST /predict`.
+- Accepts a URL through `POST /predict/url` and extracts simple URL-shape signals.
+- Fills missing feature values from the mode of the training dataset.
+- Uses Google Safe Browsing for URL reputation when `SAFE_BROWSING_API_KEY` is configured.
+- Runs drift checks on prediction input and writes a report under `reports/drift/`.
+- Automatically starts background retraining when drift exceeds `DRIFT_THRESHOLD`.
+- Supports manual retraining through `POST /train`.
+- Saves the latest `final_model/model.pkl` and `final_model/preprocessor.pkl`.
+- Uploads model artifacts to Google Cloud Storage when `GCS_BUCKET_NAME` is configured.
+- Provides a Streamlit UI with quick inputs and optional advanced feature controls.
 
-- [Features](#features)
-- [Pipeline Stages](#pipeline-stages)
-- [Key Metrics](#key-metrics)
-- [How to Run](#how-to-run)
-- [API Usage](#api-usage)
-- [Tech Stack & Toolkits](#tech-stack--toolkits)
-- [Contributing](#contributing)
+## Main Flow
 
----
+1. `push_data.py` loads `Network_Data/phisingData.csv` into MongoDB.
+2. `TrainingPipeline` pulls MongoDB data, splits train/test data, validates schema, checks drift, transforms features, trains models, and saves artifacts.
+3. FastAPI loads the saved model/preprocessor once and reloads when files change.
+4. Prediction input is converted into the exact 30-column feature vector expected by the saved preprocessor.
+5. Drift is checked for every prediction request.
+6. If drift exceeds the threshold, retraining starts in the background.
 
-## Features
+## API
 
-- **Automated Data Ingestion:** Loads and splits data from MongoDB.
-- **Data Validation:** Schema checks, column validation, and drift detection.
-- **Data Transformation:** KNN-based imputation and feature engineering.
-- **Model Training:** Trains, tunes, and selects the best model (Logistic Regression, Decision Tree, Random Forest, Gradient Boosting, AdaBoost).
-- **Experiment Tracking:** MLflow and DagsHub integration for metrics and artifact logging.
-- **Deployment:** FastAPI endpoints for real-time predictions and retraining.
-- **Cloud Integration:** AWS S3 syncing for model and artifact management.
+Start the API:
 
----
+```bash
+.venv/bin/uvicorn app:app --reload
+```
 
-## Pipeline Stages
+Predict with partial features:
 
-### 1. Data Ingestion
-- Loads `phisingData.csv` into MongoDB and splits data into train/test sets.
+```bash
+curl -X POST http://localhost:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{
+    "having_IP_Address": -1,
+    "URL_Length": 1,
+    "Shortining_Service": 1,
+    "having_At_Symbol": 1,
+    "SSLfinal_State": -1
+  }'
+```
 
-### 2. Data Validation
-- Checks data integrity using `schema.yaml`, validates column count, and detects data drift.
+Predict from a URL:
 
-### 3. Data Transformation
-- Imputes missing values using KNN, transforms features, and serializes the preprocessor.
+```bash
+curl -X POST http://localhost:8000/predict/url \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com/login"}'
+```
 
-### 4. Model Training & Evaluation
-- Trains multiple classifiers, tunes hyperparameters, and selects the best model based on F1-score. Logs metrics to MLflow.
+Manual retraining:
 
-### 5. Deployment
-- FastAPI app (`app.py`) provides endpoints for real-time inference and retraining. Artifacts and models are synced to AWS S3.
+```bash
+curl -X POST http://localhost:8000/train
+```
 
----
+Batch CSV prediction:
 
-## Key Metrics
+```bash
+curl -X POST http://localhost:8000/predict/csv \
+  -F "file=@valid_data/test.csv"
+```
 
-- **F1-score:** >92% on test data
-- **Precision:** >91% on test data
-- **Recall:** Tracked for all models
-- **Overfitting/Underfitting Gap:** <5%
-- **Experiment Tracking:** 100% of runs logged in MLflow/DagsHub
+## Streamlit
 
----
+Start Streamlit after the API is running:
 
-## How to Run
+```bash
+.venv/bin/streamlit run streamlit_app.py
+```
 
-### 1. Install Dependencies
-        pip install -r requirements.txt
-### 2. Push Data to MongoDB
-        python push_data.py
+The UI asks for a small set of high-signal fields first. Advanced users can override every model feature for more accurate prediction.
 
-### 3. Run the Main Pipeline
-        python main.py
+## Environment Variables
 
-### 4. Start FastAPI Server
-        uvicorn app:app --reload
+Copy `.env.example` to `.env` for local development. Never commit `.env`, Google service account JSON files, or trained `.pkl` artifacts.
 
----
+- `MONGO_DB_URL`: MongoDB connection string used by ingestion/training.
+- `GCS_BUCKET_NAME`: optional GCS bucket for model artifacts.
+- `GCS_MODEL_PREFIX`: optional object prefix, defaults to `phisherman/models`.
+- `GOOGLE_APPLICATION_CREDENTIALS`: optional local path to a Google service account JSON file.
+- `SAFE_BROWSING_API_KEY`: optional Google Safe Browsing API key for URL reputation checks.
+- `CORS_ALLOW_ORIGINS`: comma-separated frontend origins allowed to call the API.
+- `DRIFT_THRESHOLD`: fraction of drifted features needed to trigger retraining, defaults to `0.35`.
+- `DRIFT_MIN_REFERENCE_FREQUENCY`: single-record rare-value threshold, defaults to `0.02`.
+- `AUTO_RETRAIN_ON_DRIFT`: defaults to `true`.
+- `AUTO_RETRAIN_COOLDOWN_SECONDS`: defaults to `3600`.
+- `ENABLE_MLFLOW`: optional, defaults to `false`.
 
-## API Usage
+## Production
 
-- **Predict Phishing URL:**  
-  Send a POST request to `/predict` with URL features to get classification results.
+- Runtime: Python `3.12.13`.
+- Secrets: set environment variables in the deployment platform, not in Git.
+- Model artifacts: keep `model.pkl` and `preprocessor.pkl` in GCS under `GCS_MODEL_PREFIX`; the API downloads them when local files are missing.
+- Container: build with `docker build -t phisherman .` and run with the required env vars.
+- Health check: `GET /health`.
 
-- **Retrain Model:**  
-  Send a POST request to `/retrain` to trigger model retraining with the latest data.
+For local GCS authentication, use Google Application Default Credentials:
 
----
+```bash
+gcloud auth application-default login
+```
 
-## Tech Stack & Toolkits
+## Resume Summary
 
-- **Languages:** Python
-- **ML Libraries:** scikit-learn, pandas, numpy
-- **Experiment Tracking:** MLflow, DagsHub
-- **API Framework:** FastAPI
-- **Cloud:** AWS S3
-- **Data Storage:** MongoDB
-- **Other Tools:** BentoML, Docker
-
----
-
-## Contributing
-
-Contributions are welcome! Please open issues or submit pull requests for improvements or feature requests.
-
----
-
-
-**For any queries or support, please contact [lakshyabhatnagar1@gmail.com].**
-
-
-
+Built Phisherman, a phishing risk prediction platform with FastAPI, Streamlit, scikit-learn, MongoDB, automated drift monitoring, background retraining, and Google Cloud Storage model artifact management.

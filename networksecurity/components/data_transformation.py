@@ -1,9 +1,10 @@
+import json
 import sys,os
 import numpy as np
 import pandas as pd
 from sklearn.impute import KNNImputer
 from sklearn.pipeline import Pipeline
-from networksecurity.constants.training_pipeline import TARGET_COLUMN, DATA_TRANSFORMATION_IMPUTER_PARAMS
+from networksecurity.constants.training_pipeline import FEATURE_COLUMNS, TARGET_COLUMN, DATA_TRANSFORMATION_IMPUTER_PARAMS
 from networksecurity.entity.artifact_entity import DataValidationArtifact, DataTransformationArtifact    
 from networksecurity.entity.config_entity import DataTransformationConfig
 from networksecurity.exception.exception import NetworkSecurityException
@@ -42,11 +43,16 @@ class DataTransformation:
             test_df = pd.read_csv(self.data_validation_artifact.valid_test_file_path)
 
             # Separate features and target variable
-            X_train = train_df.drop(columns=[TARGET_COLUMN, '_id'],axis=1)
+            missing_train_columns = [column for column in FEATURE_COLUMNS + [TARGET_COLUMN] if column not in train_df.columns]
+            missing_test_columns = [column for column in FEATURE_COLUMNS + [TARGET_COLUMN] if column not in test_df.columns]
+            if missing_train_columns or missing_test_columns:
+                raise Exception(f"Missing train columns: {missing_train_columns}; missing test columns: {missing_test_columns}")
+
+            X_train = train_df[FEATURE_COLUMNS]
             y_train = train_df[TARGET_COLUMN]
             y_train = y_train.replace(-1,0)
 
-            X_test = test_df.drop(columns=[TARGET_COLUMN,'_id'],axis=1)
+            X_test = test_df[FEATURE_COLUMNS]
             y_test = test_df[TARGET_COLUMN]
             y_test = y_test.replace(-1,0)
 
@@ -64,13 +70,20 @@ class DataTransformation:
             save_numpy_array_data(self.data_transformation_config.transformed_train_file_path, array=train_arr)
             save_numpy_array_data(self.data_transformation_config.transformed_test_file_path, array=test_arr)
             save_object(self.data_transformation_config.transformed_object_file_path, preprocessor_object)
-            save_object("final_model/preprocessor.pkl", preprocessor_object)
+            feature_defaults = {}
+            for column in FEATURE_COLUMNS:
+                mode = train_df[column].mode(dropna=True)
+                feature_defaults[column] = int(mode.iloc[0]) if not mode.empty else 0
+            os.makedirs(os.path.dirname(self.data_transformation_config.feature_defaults_file_path), exist_ok=True)
+            with open(self.data_transformation_config.feature_defaults_file_path, "w") as file:
+                json.dump(feature_defaults, file, indent=2)
 
             #preparing artifacts
             data_transformation_artifact=DataTransformationArtifact(
                 transformed_object_file_path=self.data_transformation_config.transformed_object_file_path,
                 transformed_train_file_path=self.data_transformation_config.transformed_train_file_path,
-                transformed_test_file_path=self.data_transformation_config.transformed_test_file_path
+                transformed_test_file_path=self.data_transformation_config.transformed_test_file_path,
+                feature_defaults_file_path=self.data_transformation_config.feature_defaults_file_path
             )
             logging.info("Data transformation artifact created")
             return data_transformation_artifact
